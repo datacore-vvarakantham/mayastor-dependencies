@@ -199,7 +199,7 @@ fn get_volume_deleted_event(event: BTreeMap<String, String>) -> Option<EventMess
 
 fn get_pool_created_event(event: BTreeMap<String, String>) -> Option<EventMessage> {
     // target = &pool.spec().unwrap().id.to_string(), node = &pool.spec().unwrap().node.to_string()
-    let data = event.get("event_data").unwrap().to_string();
+    let data = event.get("data").unwrap().to_string();
     println!("{:?}", data);
     let p: PoolSpec = serde_json::from_str(&data).unwrap();
     Some(EventMessage {

@@ -6,13 +6,13 @@ use bytes::Bytes;
 use serde::{Serialize, de::DeserializeOwned};
 // use tracing::{info, warn};
 
-// Each event message is nearly of size 0.3 KB. So the stream of this size(3MB) can hold nearly 10K messages
-const STREAM_SIZE: i64 = 3 * 1024 * 1024;
+// Each event message is nearly of size 0.3 KB. So the stream of this size(0.3 MB) can hold nearly 1 K messages
+const STREAM_SIZE: i64 = 314573;
 
 // Stream name
 const STREAM_NAME: &str = "stats-stream";
 
-// Stats consumer name
+// Stats consumer name for Nats mbus
 const CONSUMER_NAME: &str = "stats-events-consumer";
 
 /// Result wrapper for send/receive
@@ -40,7 +40,7 @@ pub trait Bus {
 
 #[derive(Debug)]
 pub enum Error {
-    PublishTimeout {
+    PublishError {
         msg: String,
         payload: String,
         error: String
@@ -71,6 +71,12 @@ impl NatsMessageBus {
     pub async fn connect(server: &str) -> Client {
         println!("Connecting to the nats server {}...", server);
         // We retry in a loop until successful. Once connected the nats library will handle reconnections for us.
+        let options = BackoffOptions::new()
+                        .with_init_delay(Duration::from_secs(5))
+                        .with_cutoff(4)
+                        .with_delay_step(Duration::from_secs(2))
+                        .with_max_delay(Duration::from_secs(10));
+        let mut tries = 0;
         let interval = std::time::Duration::from_secs(5);
         let mut log_error = true;
         loop {
@@ -92,8 +98,7 @@ impl NatsMessageBus {
                         println!("Nats connection error: {}. Retrying...", error);
                         log_error = false;
                     }
-                    tokio::time::sleep(interval).await;
-                    continue;
+                    backoff_with_options(&mut tries, options.clone()).await;
                 },
             }
         }
@@ -120,23 +125,10 @@ impl NatsMessageBus {
         Ok(())
     }
 
-    fn get_subjects() -> Vec<String> {
-        vec![
-            "stats.events.volume".to_string(),
-            "stats.events.nexus".to_string(),
-            "stats.events.pool".to_string(),
-            "stats.events.replica".to_string(),
-            "stats.events.node".to_string(),
-            "stats.events.ha".to_string(),
-        ]
-    }
-
     async fn create_consumer_and_get_messages(&mut self, stream: Stream) -> BusResult<Messages> {
         println!("Creating consumer {}", CONSUMER_NAME);
-        // we retry if there is a server error
-        let mut retries = 0;
-        let max_retries = 6;
-        let interval = std::time::Duration::from_secs(5);
+        let options = BackoffOptions::new();
+        let mut tries = 0;
         let mut log_error = true;
 
         let consumer_config = Config {
@@ -164,28 +156,27 @@ impl NatsMessageBus {
                 log_error = false;
             }
 
-            if retries == max_retries {
+            if tries == options.clone().max_tries {
                 return Err(Error::ConsumerError {
                     msg: format!("Nats error while getting consumer messages {}", CONSUMER_NAME),
                     error: err.to_string()
                 });
             }
-            retries += 1;
-            tokio::time::sleep(interval).await;
+            backoff_with_options(&mut tries, options.clone()).await;
         }
     }
 
     async fn get_or_create_stream(&self) -> BusResult<Stream> {
-        println!("Creating stream {}", STREAM_NAME);
-        // we retry if there is a server error
-        let mut retries = 0;
-        let max_retries = 6;
-        let interval = std::time::Duration::from_secs(5);
+        println!("Getting/creating stream {}", STREAM_NAME);
+        let options = BackoffOptions::new();
+        let mut tries = 0;
         let mut log_error = true;
         let config = async_nats::jetstream::stream::Config {
             name: STREAM_NAME.to_string(),
-            subjects: NatsMessageBus::get_subjects(),
+            subjects: vec!["stats.events.*".into()],
+            duplicate_window: 120000000000, // 2 mins 0 secs - Duplicates are tracked within this window (to publish messages exactly once)
             max_bytes: STREAM_SIZE, 
+
             ..async_nats::jetstream::stream::Config::default()
         };
 
@@ -194,24 +185,23 @@ impl NatsMessageBus {
             .get_or_create_stream(config.clone())
             .await {
                 Ok(stream) => {
-                    println!("Created stream {}", STREAM_NAME);
+                    println!("Getting/creating stream {} successful", STREAM_NAME);
                     return Ok(stream);
                 },
                 Err(error) => error
             };
             if log_error {
-                println!("Error while creating stream {}: {}. Retrying...", STREAM_NAME, err);
+                println!("Error while getting/creating stream {}: {}. Retrying...", STREAM_NAME, err);
                 log_error = false;
             }
 
-            if retries == max_retries {
+            if tries == options.clone().max_tries {
                 return Err(Error::StreamError {
-                    msg: format!("Error while creating stream {}", STREAM_NAME),
+                    msg: format!("Error while getting/creating stream {}", STREAM_NAME),
                     error: err.to_string()
                 });
             }
-            retries += 1;
-            tokio::time::sleep(interval).await;
+            backoff_with_options(&mut tries, options.clone()).await;
         }
     }
 }
@@ -220,10 +210,9 @@ impl NatsMessageBus {
 impl Bus for NatsMessageBus {
 
     async fn publish<T: NatsMessage>(&mut self, message: &T) -> BusResult<u64> {
-        let mut retries = 0;
-        let max_retries = 6;
+        let options = BackoffOptions::publish_backoff_options();
+        let mut tries = 0;
         let mut log_error = true;
-        let interval = std::time::Duration::from_secs(5);
         let subject = message.subject().clone();
         let payload = message.payload().clone();
         loop {
@@ -246,20 +235,20 @@ impl Bus for NatsMessageBus {
                 log_error = false;
             }
 
-            if retries == max_retries {
-                return Err(Error::PublishTimeout {
-                    msg: format!("Error publishing message to jetstream. Retried {} times. Dropping the message.", max_retries),
+            if tries == options.clone().max_tries {
+                return Err(Error::PublishError {
+                    msg: format!("Error publishing message to jetstream. Retried {} times. Dropping the message.", options.max_tries),
                     payload: message.msg(),
                     error: err.to_string()
                 });
             }
-            retries += 1;
             if let Some(error) = err.downcast_ref::<std::io::Error>() {
                 if error.kind() == ErrorKind::TimedOut {
+                    tries += 1;
                     continue;
                 } 
             }
-            tokio::time::sleep(interval).await;
+            backoff_with_options(&mut tries, options.clone()).await;
         }
     }
 
@@ -310,6 +299,87 @@ impl<T: Serialize + DeserializeOwned> BusSubscription<T> {
             } else {
                 return None;
             }
+        }
+    }
+}
+
+/// Backoff delay options for the retries to the NATS jetstream message bus
+/// Max number of retries until it gives up.
+#[derive(Clone, Debug)]
+struct BackoffOptions {
+    // initial delay
+    init_delay: Duration,
+    // the number of attempts with initial delay
+    cutoff: u32,
+    // increase in delay with each retry after cutoff is reached
+    step: Duration,
+    // maximum delay
+    max_delay: Duration,
+    // maximum tries
+    max_tries: u32,
+}
+
+impl Default for BackoffOptions {
+    fn default() -> Self {
+        Self {
+            init_delay: Duration::from_secs(5),
+            cutoff: 4,
+            step: Duration::from_secs(2),
+            max_delay: Duration::from_secs(10),
+            max_tries: 10
+        }
+    }
+}
+
+impl BackoffOptions {
+
+    /// New options with default values.
+    #[must_use]
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Initial delay before the first retry
+    #[must_use]
+    pub fn with_init_delay(mut self, init_delay: Duration) -> Self {
+        self.init_delay = init_delay;
+        self
+    }
+
+    /// Delay multiplied at each iteration.
+    #[must_use]
+    pub fn with_delay_step(mut self, step: Duration) -> Self {
+        self.step = step;
+        self
+    }
+
+    /// Number of tries with the initial delay
+    #[must_use]
+    pub fn with_cutoff(mut self, cutoff: u32) -> Self {
+        self.cutoff = cutoff;
+        self
+    }
+
+    /// Maximum delay
+    #[must_use]
+    pub fn with_max_delay(mut self, max_delay: Duration) -> Self {
+        self.max_delay = max_delay;
+        self
+    }
+
+    /// Specify a max number of tries before giving up.
+    pub fn _with_max_tries(mut self, max_tries: u32) -> Self {
+        self.max_tries = max_tries;
+        self
+    }
+
+    fn publish_backoff_options() -> Self {
+        Self {
+            init_delay: Duration::from_secs(2),
+            cutoff: 4,
+            step: Duration::from_secs(2),
+            max_delay: Duration::from_secs(10),
+            max_tries: 10
         }
     }
 }
