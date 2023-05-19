@@ -26,4 +26,4 @@ async-trait = "0.1.64"
 futures = "0.3.26"
 # mbus_api = { path = "../dependencies/mbus_api" }
 # grpc = { path = "../../../control-plane/grpc" }
-stor-port = { path = "../../../control-plane/stor-port" }
+# stor-port = { path = "../../../control-plane/stor-port" }
