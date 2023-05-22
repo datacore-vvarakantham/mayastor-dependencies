@@ -1,8 +1,7 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use anyhow::{anyhow, Error};
-
-use crate::mbus_nats::NatsMessage;
+use uuid::Uuid;
+use crate::NatsMessage;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct EventMessage {
@@ -28,12 +27,23 @@ pub struct EventSource {
 
 impl NatsMessage for EventMessage {
     fn subject(&self) -> String {
-        format!("stats.events.{}", self.category.to_string())
+        format!("events.{}", self.category.to_string()) // if category is volume, then the subject for the message is 'events.volume'
     }
     fn payload(&self) -> bytes::Bytes {
         Bytes::from(serde_json::to_vec(self).unwrap())
+    }
+    fn headers(&self) -> async_nats::header::HeaderMap {
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert(async_nats::header::NATS_MESSAGE_ID, new_random().as_ref());
+        headers
     }
     fn msg(&self) -> String {
         format!("event: {:?}", self)
     }
 }
+
+fn new_random() -> String {
+    let id = Uuid::new_v4();
+    id.to_string()
+}
+
