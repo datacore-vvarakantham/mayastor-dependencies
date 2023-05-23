@@ -3,8 +3,8 @@ use bytes::Bytes;
 use mbus_nats::{BusSubscription, BusResult};
 use serde::{Serialize, de::DeserializeOwned};
 
-mod mbus_nats;
-mod message;
+pub mod mbus_nats;
+pub mod message;
 mod common;
 
 pub trait NatsMessage: Send + Sync {
@@ -25,7 +25,6 @@ pub trait Bus {
     async fn publish<T: NatsMessage>(&mut self,
         message: &T) -> BusResult<u64>;
     /// Create a subscription which can be
-    /// polled for messages until it is either explicitly closed or
-    /// when the bus is closed
+    /// polled for messages until the bus is closed
     async fn subscribe<T: Serialize + DeserializeOwned>(&mut self) -> BusResult<BusSubscription<T>>;
 }

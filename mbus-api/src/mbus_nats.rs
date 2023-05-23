@@ -4,17 +4,14 @@ use async_nats::{jetstream::{consumer::{push::{Messages, Config}, DeliverPolicy}
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 use crate::{common::{errors::JetstreamError, constants::*, retry::{BackoffOptions, backoff_with_options}}, NatsMessage, Bus};
-use tracing::info;
 
 
-/// Result wrapper for send/receive
+/// Result wrapper for Jetstream requests
 pub type BusResult<T> = Result<T, JetstreamError>;
 
 /// Initialise the Nats Message Bus
 pub async fn message_bus_init(server: &str) -> NatsMessageBus {
-    let mut mbus = NatsMessageBus::new(&server).await;
-    mbus.jetstream.set_timeout(PUBLISH_TIMEOUT); // timeout for jetstream publish
-    mbus
+    NatsMessageBus::new(&server).await
 }
 
 /// Nats implementation of the Bus
@@ -22,11 +19,13 @@ pub async fn message_bus_init(server: &str) -> NatsMessageBus {
 pub struct NatsMessageBus {
     client: Client,
     jetstream: Context,
-    stream_created: bool,
 }
+
 impl NatsMessageBus {
+
+    /// Connect to nats server
     pub async fn connect(server: &str) -> Client {
-        info!("Connecting to the nats server {}...", server);
+        tracing::info!("Connecting to the nats server {}...", server);
         // We retry in a loop until successful. Once connected the nats library will handle reconnections for us.
         let options = BackoffOptions::new()
                             .with_init_delay(Duration::from_secs(5))
@@ -38,19 +37,18 @@ impl NatsMessageBus {
         loop {
             match async_nats::ConnectOptions::new().event_callback(|event| async move {
                 match event {
-                    async_nats::Event::Disconnected => info!("NATS connection has been lost"),
-                    async_nats::Event::Connected => info!("NATS connection has been reestablished"),
-                    async_nats::Event::ClientError(err) => info!("Client error occurred: {}", err),
-                    other => info!("Other event happened: {}", other),
+                    async_nats::Event::Disconnected => tracing::warn!("NATS connection has been lost"),
+                    async_nats::Event::Connected => tracing::info!("NATS connection has been reestablished"),
+                    _ => ()
             }
             }).connect(server).await {
                 Ok(client) => {
-                    info!("Successfully connected to the nats server {}", server);
+                    tracing::info!("Connected to the nats server {}", server);
                     return client;
                 },
                 Err(error) => {
                     if log_error {
-                        info!("Nats connection error: {}. Retrying...", error);
+                        tracing::warn!("Nats connection error: {:?}. Retrying...", error);
                         log_error = false;
                     }
                     backoff_with_options(&mut tries, options.clone()).await;
@@ -60,32 +58,35 @@ impl NatsMessageBus {
 
     }
 
+    /// Creates a new nats message bus connection
     pub async fn new(
         server: &str
     ) -> Self {
         let client = Self::connect(server).await;
         Self {
             client: client.clone(),
-            jetstream: jetstream::new(client.clone()),
-            stream_created: false,
+            jetstream: {
+                let mut js = jetstream::new(client.clone());
+                js.set_timeout(PUBLISH_TIMEOUT);
+                js
+            }
         }
     }
 
+    /// Ensures that the stream is created on jetstream
     pub async fn verify_stream_exists(&mut self) -> BusResult<()> {
-        if !self.stream_created {
-            self.get_or_create_stream().await?;
-
-            self.stream_created = true;
-        }
+        let options = BackoffOptions::new().with_max_retries(0);
+        if let Err(err) = self.get_or_create_stream(Some(options)).await {
+            tracing::warn!("Error while getting/creating stream '{}': {:?}", STREAM_NAME, err);
+        }        
         Ok(())
     }
 
+    /// Creates consumer and returns an iterator for the messages on the stream
     async fn create_consumer_and_get_messages(&mut self, stream: Stream) -> BusResult<Messages> {
-        info!("Getting/Creating consumer for stats '{}'", CONSUMER_NAME);
+        tracing::info!("Getting/creating consumer for stats '{}'", CONSUMER_NAME);
         let options = BackoffOptions::new();
         let mut tries = 0;
-        // let max_retries = 6;
-        // let interval = std::time::Duration::from_secs(5);
         let mut log_error = true;
 
         let consumer_config = Config {
@@ -101,7 +102,7 @@ impl NatsMessageBus {
                 Ok(consumer) => {
                     match consumer.messages().await {
                         Ok(messages) => {
-                            info!("Getting/creating consumer for stats '{}' successful", CONSUMER_NAME);
+                            tracing::info!("Getting/creating consumer for stats '{}' successful", CONSUMER_NAME);
                             return Ok(messages);
                         }
                         Err(error) => error
@@ -109,24 +110,25 @@ impl NatsMessageBus {
                 },
                 Err(error) => error
             };
-            if log_error {
-                info!("Nats error while getting consumer '{}' messages: {}. Retrying...", CONSUMER_NAME, err);
-                log_error = false;
-            }
 
-            if tries == options.clone().max_tries {
+            if tries == options.clone().max_retries {
                 return Err(JetstreamError::ConsumerError {
                     consumer: CONSUMER_NAME.to_string(),
                     error: err.to_string()
                 });
             }
+            if log_error {
+                tracing::warn!("Nats error while getting consumer '{}' messages: {:?}. Retrying...", CONSUMER_NAME, err);
+                log_error = false;
+            }
             backoff_with_options(&mut tries, options.clone()).await;
         }
     }
 
-    async fn get_or_create_stream(&self) -> BusResult<Stream> {
-        info!("Getting/creating stream '{}'", STREAM_NAME);
-        let options = BackoffOptions::new();
+    /// Creates a stream if not exists on message bus. Returns a handle to the stream
+    pub async fn get_or_create_stream(&self, retry_options: Option<BackoffOptions>) -> BusResult<Stream> {
+        tracing::info!("Getting/creating stream '{}'", STREAM_NAME);
+        let options = retry_options.unwrap_or_else(|| BackoffOptions::new());
         let mut tries = 0;
         let mut log_error = true;
         let stream_config = async_nats::jetstream::stream::Config {
@@ -142,21 +144,21 @@ impl NatsMessageBus {
             .get_or_create_stream(stream_config.clone())
             .await {
                 Ok(stream) => {
-                    info!("Getting/creating stream '{}' successful", STREAM_NAME);
+                    tracing::info!("Getting/creating stream '{}' successful", STREAM_NAME);
                     return Ok(stream);
                 },
                 Err(error) => error
             };
-            if log_error {
-                info!("Error while getting/creating stream '{}': {}. Retrying...", STREAM_NAME, err);
-                log_error = false;
-            }
 
-            if tries == options.clone().max_tries {
+            if tries == options.clone().max_retries {
                 return Err(JetstreamError::StreamError {
                     stream: STREAM_NAME.to_string(),
                     error: err.to_string()
                 });
+            }
+            if log_error {
+                tracing::warn!("Error while getting/creating stream '{}': {:?}. Retrying...", STREAM_NAME, err);
+                log_error = false;
             }
             backoff_with_options(&mut tries, options.clone()).await;
         }
@@ -166,14 +168,21 @@ impl NatsMessageBus {
 #[async_trait]
 impl Bus for NatsMessageBus {
 
+    /// Publish messages to the message bus atmost once. The message is discarded if there is any connection error after some retries
     async fn publish<T: NatsMessage>(&mut self, message: &T) -> BusResult<u64> {
         let options = BackoffOptions::publish_backoff_options();
         let mut tries = 0;
         let mut log_error = true;
+
         let subject = message.subject().clone();
         let payload = message.payload().clone();
+        let headers = message.headers().clone();
+
+        use std::time::Instant;
+        let now = Instant::now();
+
         loop {
-            let publish_request = self.jetstream.publish(subject.clone(), payload.clone());
+            let publish_request = self.jetstream.publish_with_headers(subject.clone(), headers.clone(), payload.clone());
             let err = match publish_request.await {
                 Ok(x) => {
                     match x.await {
@@ -187,14 +196,18 @@ impl Bus for NatsMessageBus {
             };
             
             if log_error {
-                info!("Error publishing message to jetstream: {}. Retrying...", err);
+                tracing::warn!("Error publishing message to jetstream: {:?}. Retrying...", err);
                 let _stream = self.verify_stream_exists().await;
                 log_error = false;
             }
 
-            if tries == options.clone().max_tries {
+            if tries == options.clone().max_retries {
+
+                let elapsed = now.elapsed();
+                tracing::info!("Elapsed: {:.2?}", elapsed);
+
                 return Err(JetstreamError::PublishError {
-                    retries: options.max_tries,
+                    retries: options.max_retries,
                     payload: message.msg(),
                     error: err.to_string()
                 });
@@ -209,14 +222,13 @@ impl Bus for NatsMessageBus {
         }
     }
 
-    
-
+    /// Subscribes to the stream on messages though a consumer. Returns an ordered stream of messages published to the stream
     async fn subscribe<T: Serialize + DeserializeOwned>(&mut self) -> BusResult<BusSubscription<T>> {
-        info!("Subscribing to Nats message bus");
-        let stream = self.get_or_create_stream().await?;
+        tracing::info!("Subscribing to Nats message bus");
+        let stream = self.get_or_create_stream(None).await?;
 
         let messages = self.create_consumer_and_get_messages(stream).await?;
-        info!("Subscribed to Nats message bus successfully");
+        tracing::info!("Subscribed to Nats message bus successfully");
 
         return Ok(BusSubscription {
             messages,
@@ -237,20 +249,20 @@ impl<T: Serialize + DeserializeOwned> BusSubscription<T> {
                 let message = match message {
                     Ok(message) => message,
                     Err(error) => {
-                        info!("Error accessing jetstream message: {}.", error);
+                        tracing::warn!("Error accessing jetstream message: {:?}.", error);
                         continue;
                     }
                 };
                 let _ack = message
                     .ack()
                     .await.map_err(|error| {
-                        info!("Error acking jetstream message: {:?}", error)
+                        tracing::warn!("Error acking jetstream message: {:?}", error)
                     });
                 let value: Result<T, _> = serde_json::from_slice(&message.payload);
                 match value {
                     Ok(value) => return Some(value),
                     Err(_error) => {
-                        info!("Error parsing jetstream message: {:?}; message ignored.", message);
+                        tracing::warn!("Error parsing jetstream message: {:?}; message ignored.", message);
                     }
                 }
             } else {

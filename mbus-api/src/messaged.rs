@@ -3,7 +3,7 @@ use anyhow::{anyhow, Error};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use bytes::Bytes;
-use crate::mbus_nats::NatsMessage;
+use crate::NatsMessage;
 use stor_port::{
     transport_api::ResourceKind,
     types::v0::{transport::{CreatePool, DestroyPool, CreateReplica, DestroyReplica, CreateNexus, DestroyNexus, Volume}, store::pool::PoolSpec},
@@ -104,7 +104,7 @@ pub struct EventMessage {
 pub struct EventMeta {
     pub id: String,
     pub source: EventSource,
-    pub eventTimestamp: String,
+    pub event_timestamp: String,
     pub version: String,
 }
 
@@ -117,37 +117,45 @@ pub struct EventSource {
 
 impl NatsMessage for EventMessage {
     fn subject(&self) -> String {
-        format!("stats.events.{}", self.category.to_string())
+        format!("events.{}", self.category.to_string()) // if category is volume, then the subject for the message is 'events.volume'
     }
     fn payload(&self) -> bytes::Bytes {
         Bytes::from(serde_json::to_vec(self).unwrap())
+    }
+    fn headers(&self) -> async_nats::header::HeaderMap {
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert(async_nats::header::NATS_MESSAGE_ID, new_random().as_ref());
+        headers
     }
     fn msg(&self) -> String {
         format!("event: {:?}", self)
     }
 }
 
+fn new_random() -> String {
+    let id = Uuid::new_v4();
+    id.to_string()
+}
+
 impl EventMessage {
     pub fn from_event(event: BTreeMap<String, String>) -> Option<EventMessage> {
-        match event.get("event").unwrap().as_str() {
-            "VolumeCreated" => get_volume_created_event(event),
-            "VolumeDeleted" => get_volume_deleted_event(event),
-            "NexusCreated" => get_nexus_created_event(event),
-            "NexusDeleted" => get_nexus_deleted_event(event),
-            "PoolCreated" => get_pool_created_event(event),
-            "PoolDeleted" => get_pool_deleted_event(event),
-            "ReplicaCreated" => get_replica_created_event(event),
-            "ReplicaDeleted" => get_replica_deleted_event(event),
-            _ => {
-                println!("Unexpected event message");
-                None
-            }
+        match event.get("event") {
+            Some(event_msg) => match event_msg.as_str() {
+                "VolumeCreated" => get_volume_created_event(event),
+                "VolumeDeleted" => get_volume_deleted_event(event),
+                "NexusCreated" => get_nexus_created_event(event),
+                "NexusDeleted" => get_nexus_deleted_event(event),
+                "PoolCreated" => get_pool_created_event(event),
+                "PoolDeleted" => get_pool_deleted_event(event),
+                "ReplicaCreated" => get_replica_created_event(event),
+                "ReplicaDeleted" => get_replica_deleted_event(event),
+                _ => {
+                    println!("Unexpected event message");
+                    return None;
+                }
+            },
+            None => return None,
         }
-    }
-
-    pub fn new_random() -> String {
-        let id = Uuid::new_v4();
-        id.to_string()
     }
 }
 
@@ -162,12 +170,12 @@ fn get_volume_created_event(event: BTreeMap<String, String>) -> Option<EventMess
         action: EventAction::Created.to_string(),
         target: p.spec().uuid.to_string(),
         metadata: EventMeta {
-            id: EventMessage::new_random(),
+            id: new_random(),
             source: EventSource {
                 node: p.state().target_node().unwrap()?.to_string(),  
                 component: "core-agent".to_string(),
             },
-            eventTimestamp: event.get("timestamp").unwrap().to_string(),
+            event_timestamp: event.get("timestamp").unwrap().to_string(),
             version: "v0".to_string(),
         },
     })
@@ -185,12 +193,12 @@ fn get_volume_deleted_event(event: BTreeMap<String, String>) -> Option<EventMess
         action: EventAction::Deleted.to_string(),
         target: p.spec().uuid.to_string(),
         metadata: EventMeta {
-            id: EventMessage::new_random(),
+            id: new_random(),
             source: EventSource {
                 node: p.state().target_node().unwrap()?.to_string(), 
                 component: "core-agent".to_string(),
             },
-            eventTimestamp: event.get("timestamp").unwrap().to_string(),
+            event_timestamp: event.get("timestamp").unwrap().to_string(),
             version: "v0".to_string(),
         },
     })
@@ -199,7 +207,7 @@ fn get_volume_deleted_event(event: BTreeMap<String, String>) -> Option<EventMess
 
 fn get_pool_created_event(event: BTreeMap<String, String>) -> Option<EventMessage> {
     // target = &pool.spec().unwrap().id.to_string(), node = &pool.spec().unwrap().node.to_string()
-    let data = event.get("data").unwrap().to_string();
+    let data = event.get("event_data").unwrap().to_string();
     println!("{:?}", data);
     let p: PoolSpec = serde_json::from_str(&data).unwrap();
     Some(EventMessage {
@@ -208,12 +216,12 @@ fn get_pool_created_event(event: BTreeMap<String, String>) -> Option<EventMessag
         action: EventAction::Created.to_string(),
         target: p.id.to_string(),
         metadata: EventMeta {
-            id: EventMessage::new_random(),
+            id: new_random(),
             source: EventSource {
                 node: p.node.to_string(), 
                 component: "core-agent".to_string(),
             },
-            eventTimestamp: event.get("timestamp").unwrap().to_string(),
+            event_timestamp: event.get("timestamp").unwrap().to_string(),
             version: "v0".to_string(),
         },
     })
@@ -230,12 +238,12 @@ fn get_pool_deleted_event(event: BTreeMap<String, String>) -> Option<EventMessag
         action: EventAction::Deleted.to_string(),
         target: p.id.to_string(),
         metadata: EventMeta {
-            id: EventMessage::new_random(),
+            id: new_random(),
             source: EventSource {
                 node: p.node.to_string(), 
                 component: "core-agent".to_string(),
             },
-            eventTimestamp: event.get("timestamp").unwrap().to_string(),
+            event_timestamp: event.get("timestamp").unwrap().to_string(),
             version: "v0".to_string(),
         },
     })
@@ -253,12 +261,12 @@ fn get_nexus_created_event(event: BTreeMap<String, String>) -> Option<EventMessa
         action: EventAction::Created.to_string(),
         target: p.uuid.to_string(),
         metadata: EventMeta {
-            id: EventMessage::new_random(),
+            id: new_random(),
             source: EventSource {
                 node: p.node.to_string(), 
                 component: "core-agent".to_string(),
             },
-            eventTimestamp: event.get("timestamp").unwrap().to_string(),
+            event_timestamp: event.get("timestamp").unwrap().to_string(),
             version: "v0".to_string(),
         },
     })
@@ -276,12 +284,12 @@ fn get_nexus_deleted_event(event: BTreeMap<String, String>) -> Option<EventMessa
         action: EventAction::Deleted.to_string(),
         target: p.uuid.to_string(),
         metadata: EventMeta {
-            id: EventMessage::new_random(),
+            id: new_random(),
             source: EventSource {
                 node: p.node.to_string(), 
                 component: "core-agent".to_string(),
             },
-            eventTimestamp: event.get("timestamp").unwrap().to_string(),
+            event_timestamp: event.get("timestamp").unwrap().to_string(),
             version: "v0".to_string(),
         },
     })
@@ -299,12 +307,12 @@ fn get_replica_created_event(event: BTreeMap<String, String>) -> Option<EventMes
         action: EventAction::Created.to_string(),
         target: p.uuid.to_string(),
         metadata: EventMeta {
-            id: EventMessage::new_random(),
+            id: new_random(),
             source: EventSource {
                 node: p.node.to_string(), 
                 component: "core-agent".to_string(),
             },
-            eventTimestamp: event.get("timestamp").unwrap().to_string(),
+            event_timestamp: event.get("timestamp").unwrap().to_string(),
             version: "v0".to_string(),
         },
     })
@@ -322,12 +330,12 @@ fn get_replica_deleted_event(event: BTreeMap<String, String>) -> Option<EventMes
         action: EventAction::Deleted.to_string(),
         target: p.uuid.to_string(),
         metadata: EventMeta {
-            id: EventMessage::new_random(),
+            id: new_random(),
             source: EventSource {
                 node: p.node.to_string(), 
                 component: "core-agent".to_string(),
             },
-            eventTimestamp: event.get("timestamp").unwrap().to_string(),
+            event_timestamp: event.get("timestamp").unwrap().to_string(),
             version: "v0".to_string(),
         },
     })

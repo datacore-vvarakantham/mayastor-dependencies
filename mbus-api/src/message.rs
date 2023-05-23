@@ -3,25 +3,39 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crate::NatsMessage;
 
+
+// General structure of message bus event
 #[derive(Serialize, Deserialize, Debug)]
 pub struct EventMessage {
+    // Event Category
     pub category: String,
+    // Event Action
     pub action: String,
+    // target id for the category against which action is performed
     pub target: String,
+    // Event meta data
     pub metadata: EventMeta,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct EventMeta {
+    // Something that uniquely identifies a single container's events
+    // UUIDv4
+    // GUID
     pub id: String,
     pub source: EventSource,
+    // Timestamp
     pub event_timestamp: String,
+    // Version of the event message
     pub version: String,
 }
 
+// Source
 #[derive(Serialize, Deserialize, Debug)]
 pub struct EventSource {
+    // io-engine or core-agent
     pub component: String,
+    //node name
     pub node: String,
 }
 
@@ -42,6 +56,8 @@ impl NatsMessage for EventMessage {
     }
 }
 
+
+/// Generates random id for the nats message (useful for checking for duplicate messages though the duplicate_window of the nats stream)
 fn new_random() -> String {
     let id = Uuid::new_v4();
     id.to_string()
