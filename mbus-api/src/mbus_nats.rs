@@ -135,7 +135,9 @@ impl NatsMessageBus {
             name: STREAM_NAME.to_string(),
             subjects: vec![SUBJECTS.into()],
             duplicate_window: DUPLICATE_WINDOW, 
-            max_bytes: STREAM_SIZE, 
+            max_bytes: STREAM_SIZE,
+            storage: async_nats::jetstream::stream::StorageType::Memory, //The type of storage backend, `File` (default)
+            num_replicas: 2, // How many replicas to keep for each message in a clustered JetStream, maximum 5
             ..async_nats::jetstream::stream::Config::default()
         };
 
