@@ -1,19 +1,19 @@
 use std::cmp::min;
 use std::time::Duration;
 
-/// Backoff delay options for the retries to the NATS jetstream message bus
+/// Backoff delay options for the retries to the NATS jetstream message bus.
 /// Max number of retries until it gives up.
 #[derive(Clone, Debug)]
 pub struct BackoffOptions {
-    // initial delay
+    /// Initial delay.
     pub init_delay: Duration,
-    // the number of attempts with initial delay
+    /// The number of attempts with initial delay.
     pub cutoff: u32,
-    // increase in delay with each retry after cutoff is reached
+    /// Increase in delay with each retry after cutoff is reached.
     pub step: Duration,
-    // maximum delay
+    /// Maximum delay.
     pub max_delay: Duration,
-    // maximum retries
+    /// Maximum retries.
     pub max_retries: u32,
 }
 
@@ -37,7 +37,7 @@ impl BackoffOptions {
         Default::default()
     }
 
-    /// Initial delay before the first retry
+    /// Initial delay before the first retry.
     pub fn with_init_delay(mut self, init_delay: Duration) -> Self {
         self.init_delay = init_delay;
         self
@@ -49,13 +49,13 @@ impl BackoffOptions {
         self
     }
 
-    /// Number of tries with the initial delay
+    /// Number of tries with the initial delay.
     pub fn with_cutoff(mut self, cutoff: u32) -> Self {
         self.cutoff = cutoff;
         self
     }
 
-    /// Maximum delay
+    /// Maximum delay.
     pub fn with_max_delay(mut self, max_delay: Duration) -> Self {
         self.max_delay = max_delay;
         self
@@ -78,8 +78,8 @@ impl BackoffOptions {
     }
 }
 
-/// Simple backoff delay which get gradually larger up to a 'max' duration
-pub async fn backoff_with_options(tries: &mut u32, options: BackoffOptions) {
+/// Simple backoff delay which get gradually larger up to a 'max' duration.
+pub async fn backoff_with_options(tries: &mut u32, options: &BackoffOptions) {
     *tries += 1;
     let backoff = if *tries <= options.cutoff {
         options.init_delay

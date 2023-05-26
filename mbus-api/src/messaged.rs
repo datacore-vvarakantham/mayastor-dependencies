@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, str::FromStr};
 use anyhow::{anyhow, Error};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use bytes::Bytes;
-use crate::NatsMessage;
+// use bytes::Bytes;
+// use crate::NatsMessage;
 use stor_port::{
     transport_api::ResourceKind,
     types::v0::{transport::{CreatePool, DestroyPool, CreateReplica, DestroyReplica, CreateNexus, DestroyNexus, Volume}, store::pool::PoolSpec},
@@ -115,22 +115,22 @@ pub struct EventSource {
     pub node: String,
 }
 
-impl NatsMessage for EventMessage {
-    fn subject(&self) -> String {
-        format!("events.{}", self.category.to_string()) // if category is volume, then the subject for the message is 'events.volume'
-    }
-    fn payload(&self) -> bytes::Bytes {
-        Bytes::from(serde_json::to_vec(self).unwrap())
-    }
-    fn headers(&self) -> async_nats::header::HeaderMap {
-        let mut headers = async_nats::HeaderMap::new();
-        headers.insert(async_nats::header::NATS_MESSAGE_ID, new_random().as_ref());
-        headers
-    }
-    fn msg(&self) -> String {
-        format!("event: {:?}", self)
-    }
-}
+// impl NatsMessage for EventMessage {
+//     fn subject(&self) -> String {
+//         format!("events.{}", self.category.to_string()) // if category is volume, then the subject for the message is 'events.volume'
+//     }
+//     fn payload(&self) -> bytes::Bytes {
+//         Bytes::from(serde_json::to_vec(self).unwrap())
+//     }
+//     fn headers(&self) -> async_nats::header::HeaderMap {
+//         let mut headers = async_nats::HeaderMap::new();
+//         headers.insert(async_nats::header::NATS_MESSAGE_ID, new_random().as_ref());
+//         headers
+//     }
+//     fn msg(&self) -> String {
+//         format!("event: {:?}", self)
+//     }
+// }
 
 fn new_random() -> String {
     let id = Uuid::new_v4();
