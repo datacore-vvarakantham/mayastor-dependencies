@@ -168,6 +168,24 @@ impl NatsMessageBus {
         }
     }
 
+    async fn verify_subscription<T: Serialize + DeserializeOwned>(&mut self) -> BusResult<Option<BusSubscription<T>>> {
+        tracing::info!("Verifying subscription");
+
+        let options = BackoffOptions::new().with_max_retries(0);
+        let mut stream = self.get_or_create_stream(Some(options)).await?;
+        match stream.info().await {
+            Ok(info) => {
+                if info.state.consumer_count == 0 {
+                    return Ok(Some(self.subscribe().await?))
+                }
+            },
+            Err(err) => {
+                tracing::warn!("Error while getting info for stream '{}': {:?}", STREAM_NAME, err);
+            }
+        };
+        return Ok(None);
+    }
+
     /// Should be unique for each message.
     fn subject(msg: &EventMessage) -> String {
         format!("events.{}.{}", msg.category, msg.metadata.id) // If category is volume and id is 'id', then the subject for the message is 'events.volume.id'
@@ -255,13 +273,26 @@ pub struct BusSubscription<T> {
 }
 
 impl<T: Serialize + DeserializeOwned> BusSubscription<T> {
-    pub async fn next(&mut self) -> Option<T> {
+    pub async fn next(&mut self, mbus: &mut NatsMessageBus) -> Option<T> {
+        let mut err_count = 0;
         loop {
             if let Some(message) = self.messages.next().await {
                 let message = match message {
                     Ok(message) => message,
                     Err(error) => {
                         tracing::warn!("Error accessing jetstream message: {:?}.", error);
+                        err_count += 1;
+                        if err_count == 10 {
+                            match mbus.verify_subscription::<T>().await {
+                                Ok(x) => {
+                                    if let Some(subscription) = x {
+                                        self.messages = subscription.messages;
+                                    }
+                                },
+                                Err(err) => println!("Error verifying jetstream subscription: {:?}.", err),
+                            }
+                            err_count = 0;
+                        }
                         continue;
                     }
                 };
