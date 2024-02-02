@@ -57,6 +57,10 @@ enum EventAction {
   Shutdown = 18;
   Start = 19;
   Stop = 20;
+  SubsystemPause = 21;
+  SubsystemResume = 22;
+  Init = 23;
+  Reconfiguring = 24;
 }
 
 // Event meta data
